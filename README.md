@@ -214,13 +214,6 @@ Never push your `.env` file to GitHub. Add it to `.gitignore` before your first 
 - [ ] Bulk email to top candidates
 
 ---
-
-## Screenshots
-
-Add your screenshots here after uploading them to the repo.
-
----
-
 ## Built By
 
 **Abhishek Choudhary**

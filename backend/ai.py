@@ -14,7 +14,7 @@ from groq import Groq
 # CONFIG
 # Get free key at: console.groq.com
 # ─────────────────────────────────────────
-GROQ_API_KEY = "YOUR_GROQ_API_KEY"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY"),
 MODEL        = "llama-3.3-70b-versatile"
 MAX_TOKENS   = 4000
 TEMPERATURE  = 0.2

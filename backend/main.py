@@ -1,19 +1,21 @@
 """
-main.py — ScreenAI ULTIMATE FIXED VERSION (v2.0)
-Per-CV independent analysis → ZERO skill copying, 100% accurate matched/missing
-This is the version I use for enterprise clients (Apple/Amazon level precision).
-
-Run with: uvicorn main:app --reload
+main.py — ScreenAI ULTIMATE FIXED VERSION (v2.4)
+Event Loop Deadlocks Fixed (No more freezing on 2nd attempts)
 """
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 import io
 import json
 import re
 import threading
+import time 
 from contextlib import asynccontextmanager
 from typing import List
 
-import pdfplumber
+import fitz  # PyMuPDF
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
@@ -21,20 +23,20 @@ from groq import Groq
 # ─────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────
-GROQ_API_KEY = "your_groq_api_key_here"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 DB_CONFIG = {
-    "host":               "localhost",
-    "user":               "root",
-    "password":           "your_mysql_password",
-    "database":           "screenai",
+    "host":               os.getenv("DB_HOST"),
+    "user":               os.getenv("DB_USER"),
+    "password":           os.getenv("DB_PASSWORD"),
+    "database":           os.getenv("DB_NAME"),
     "connection_timeout": 3
 }
 
-client = Groq(api_key=GROQ_API_KEY)
+client = Groq(api_key=GROQ_API_KEY, timeout=15.0)
 
 # ─────────────────────────────────────────
-# DATABASE (unchanged)
+# DATABASE
 # ─────────────────────────────────────────
 def get_db():
     import mysql.connector
@@ -43,7 +45,6 @@ def get_db():
 def setup_tables():
     conn = get_db()
     cursor = conn.cursor()
-    # ... (same as before - all 3 tables) ...
     cursor.execute("""CREATE TABLE IF NOT EXISTS resumes (id INT AUTO_INCREMENT PRIMARY KEY, filename VARCHAR(255), extracted_text LONGTEXT, uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
     cursor.execute("""CREATE TABLE IF NOT EXISTS job_descriptions (id INT AUTO_INCREMENT PRIMARY KEY, jd_text LONGTEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
     cursor.execute("""CREATE TABLE IF NOT EXISTS results (id INT AUTO_INCREMENT PRIMARY KEY, resume_id INT, jd_id INT, rank_position INT, score FLOAT, reason TEXT, matched_skills TEXT, missing_skills TEXT, saved_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (resume_id) REFERENCES resumes(id), FOREIGN KEY (jd_id) REFERENCES job_descriptions(id))""")
@@ -53,23 +54,33 @@ def setup_tables():
     print("✅ DB tables ready")
 
 def save_resume(filename, text): 
-    # ... same ...
-    conn = get_db(); cursor = conn.cursor()
+    conn = get_db()
+    cursor = conn.cursor()
     cursor.execute("INSERT INTO resumes (filename, extracted_text) VALUES (%s, %s)", (filename, text))
-    conn.commit(); rid = cursor.lastrowid; cursor.close(); conn.close()
+    conn.commit()
+    rid = cursor.lastrowid
+    cursor.close()
+    conn.close()
     return rid
 
 def save_jd(jd_text): 
-    conn = get_db(); cursor = conn.cursor()
+    conn = get_db()
+    cursor = conn.cursor()
     cursor.execute("INSERT INTO job_descriptions (jd_text) VALUES (%s)", (jd_text,))
-    conn.commit(); jid = cursor.lastrowid; cursor.close(); conn.close()
+    conn.commit()
+    jid = cursor.lastrowid
+    cursor.close()
+    conn.close()
     return jid
 
 def save_result(resume_id, jd_id, item):
-    conn = get_db(); cursor = conn.cursor()
+    conn = get_db()
+    cursor = conn.cursor()
     cursor.execute("""INSERT INTO results (resume_id, jd_id, rank_position, score, reason, matched_skills, missing_skills) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
         (resume_id, jd_id, item["rank"], item["score"], item["reason"], ", ".join(item["matched_skills"]), ", ".join(item["missing_skills"])))
-    conn.commit(); cursor.close(); conn.close()
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 def save_to_db(cv_data, jd, ranked):
     try:
@@ -85,22 +96,24 @@ def save_to_db(cv_data, jd, ranked):
         print(f"⚠️ DB skip: {e}")
 
 # ─────────────────────────────────────────
-# PDF EXTRACTOR — More context kept
+# PDF EXTRACTOR (✅ FIXED: Converted to Safe Synchronous Read)
 # ─────────────────────────────────────────
-async def extract_text(file: UploadFile) -> str:
-    data = await file.read()
+def extract_text(file: UploadFile) -> str:
+    data = file.file.read() # Read directly from memory safely
     text_parts = []
     try:
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
-            for page in pdf.pages:
-                t = page.extract_text() or ""
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            for page in doc:
+                t = page.get_text() or ""
                 text_parts.append(t)
     except Exception as e:
         return f"[Read error {file.filename}: {e}]"
+        
     full = "\n\n".join(text_parts).strip()
     if not full:
         return f"[{file.filename} - no text]"
-    return full[:4000]   # Keep full skills section (most CVs have skills at end)
+        
+    return full[:4000]
 
 # ─────────────────────────────────────────
 # Extract JD skills
@@ -117,13 +130,13 @@ def extract_jd_skills(jd_text: str) -> list:
         return ["Python","SQL","FastAPI","TensorFlow","Keras","PyTorch","Scikit-learn","NumPy","Pandas","Matplotlib","Seaborn","Docker","Kubernetes","AWS","Azure","Google Cloud","Flask","NoSQL"]
 
 # ─────────────────────────────────────────
-# NEW: Analyse ONE CV completely independently
+# Analyse ONE CV completely independently
 # ─────────────────────────────────────────
 def analyze_single_cv(cv_text: str, jd_skills: list, filename: str):
     jd_skills_str = ", ".join(jd_skills)
     name_guess = filename.replace(".pdf","").replace("_"," ").title()
 
-    prompt = f"""You are a ruthless technical recruiter. Analyse ONLY this one CV against the required skills.
+    prompt = f"""You are a ruthless technical recruiter. Analyse ONLY this one CV against the required skills. Output in JSON format.
 
 REQUIRED SKILLS: {jd_skills_str}
 
@@ -138,7 +151,7 @@ Rules (violate = fired):
 - Reason = exactly 2 sentences
 - Name = real name from CV or use guess
 
-Return ONLY this exact JSON:
+Return ONLY this exact JSON format:
 {{
   "name": "Full Name",
   "score": 8.7,
@@ -153,13 +166,10 @@ Return ONLY this exact JSON:
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=800
+            max_tokens=800,
+            response_format={"type": "json_object"}
         )
-        raw = resp.choices[0].message.content.strip()
-        raw = re.sub(r"```json|```", "", raw)
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        data = json.loads(raw[start:end])
+        data = json.loads(resp.choices[0].message.content)
         return {
             "name": data.get("name", name_guess),
             "filename": filename,
@@ -169,11 +179,17 @@ Return ONLY this exact JSON:
             "missing_skills": data.get("missing_skills", [])
         }
     except Exception as e:
-        print(f"Single CV error {filename}: {e}")
-        return {"name": name_guess, "filename": filename, "score": 4.0, "reason": "Extraction issue.", "matched_skills": [], "missing_skills": jd_skills}
+        return {
+            "name": name_guess, 
+            "filename": filename, 
+            "score": 0.0, 
+            "reason": f"System Error: {str(e)}", 
+            "matched_skills": [], 
+            "missing_skills": jd_skills
+        }
 
 # ─────────────────────────────────────────
-# MAIN RANK FUNCTION — Per-CV calls = Bulletproof
+# MAIN RANK FUNCTION
 # ─────────────────────────────────────────
 def rank_cvs(cv_data: list, jd_text: str) -> list:
     jd_skills = extract_jd_skills(jd_text)
@@ -184,8 +200,9 @@ def rank_cvs(cv_data: list, jd_text: str) -> list:
         print(f"🔍 Analysing {cv['filename']} independently...")
         res = analyze_single_cv(cv["text"], jd_skills, cv["filename"])
         results.append(res)
+        
+        time.sleep(2.5)
 
-    # Sort by score descending → assign ranks
     results.sort(key=lambda x: x["score"], reverse=True)
     for i, item in enumerate(results):
         item["rank"] = i + 1
@@ -198,24 +215,27 @@ def rank_cvs(cv_data: list, jd_text: str) -> list:
 # ─────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app):
-    print("🌟 ScreenAI v2.0 started — Per-CV mode active (no more copy-paste)")
+    print("🌟 ScreenAI v2.4 started — Background threading active! (No freezing)")
     yield
 
-app = FastAPI(title="ScreenAI", version="2.0", lifespan=lifespan)
+app = FastAPI(title="ScreenAI", version="2.4", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/")
 def health():
-    return {"status": "ScreenAI v2.0 — Fixed & Ultra Accurate ✅"}
+    return {"status": "ScreenAI v2.4 — Fixed & Ultra Accurate ✅"}
 
+# ✅ FIXED: Removed 'async' so FastAPI runs this in a background thread
 @app.post("/screen")
-async def screen_cvs(cvs: List[UploadFile] = File(...), jd: str = Form(...)):
+def screen_cvs(cvs: List[UploadFile] = File(...), jd: str = Form(...)):
+    print(f"\n📥 Incoming request received! Processing {len(cvs)} CV(s)...")
+    
     if not cvs or len(cvs) > 10 or not jd.strip():
         raise HTTPException(400, "Invalid input")
 
     cv_data = []
     for file in cvs:
-        text = await extract_text(file)
+        text = extract_text(file) # Removed 'await'
         cv_data.append({"filename": file.filename, "text": text})
 
     ranked = rank_cvs(cv_data, jd)

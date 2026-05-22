@@ -1,220 +1,244 @@
-// script.js — ScreenAI Frontend
-// Complete JS — handles UI, file upload, backend connection, and results display
+// ==========================================
+// 1. CONFIGURATION & DOM ELEMENTS
+// ==========================================
+const BACKEND_URL = "http://127.0.0.1:8000";
 
-// ─────────────────────────────────────────
-// BACKEND URL — change this if needed
-// ─────────────────────────────────────────
-const BACKEND = "http://127.0.0.1:8000";
+// The Memory Bank: Holds files so they aren't overwritten
+let selectedFilesArray = []; 
 
-// ─────────────────────────────────────────
-// DOM READY
-// ─────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', function () {
-  document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-    anchor.addEventListener('click', function (e) {
-      e.preventDefault();
-      const target = document.querySelector(this.getAttribute('href'));
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  });
-  document.querySelectorAll('form').forEach(form => {
-    form.addEventListener('submit', function (e) { e.preventDefault(); });
-  });
+// Inputs & Buttons
+const fileInput = document.getElementById('cv-upload');
+const browseBtn = document.getElementById('browse-btn');
+const jdTextarea = document.querySelector('.jd-textarea');
+const analyzeBtn = document.querySelector('.btn-analyse');
+const analyzeBtnText = analyzeBtn.querySelector('span');
 
-  // ── Test backend connection on page load ──
-  fetch(BACKEND + "/")
-    .then(r => r.json())
-    .then(d => console.log("✅ Backend connected:", d.status))
-    .catch(() => console.warn("⚠️ Backend not reachable on " + BACKEND));
+// Display Areas
+const fileCountLabel = document.getElementById('file-count-label');
+const fileListContainer = document.getElementById('file-list-container');
+const resultsContainer = document.getElementById('results-container');
+const emptyState = document.getElementById('empty-state');
+
+
+// ==========================================
+// 2. INITIALIZATION & EVENT LISTENERS
+// ==========================================
+document.addEventListener('DOMContentLoaded', () => {
+    checkBackendConnection();
 });
 
-// ─────────────────────────────────────────
-// UI UTILS
-// ─────────────────────────────────────────
-window.UIUtils = {
-  toggleElement: (selector) => {
-    const el = document.querySelector(selector);
-    if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
-  }
+// Open file dialog when clicking the upload box
+browseBtn.addEventListener('click', () => {
+    fileInput.click();
+});
+
+// Watch for file selection
+fileInput.addEventListener('change', handleFileSelection);
+
+// Watch for the analyze button click
+analyzeBtn.addEventListener('click', processResumes);
+
+
+// ==========================================
+// 3. CORE FUNCTIONS
+// ==========================================
+
+/**
+ * Pings the backend on load to ensure it's running
+ */
+async function checkBackendConnection() {
+    try {
+        const response = await fetch(BACKEND_URL + "/");
+        const data = await response.json();
+        console.log("✅ Backend connected:", data.status);
+    } catch {
+        console.warn("⚠️ Backend not reachable on " + BACKEND_URL);
+    }
+}
+
+/**
+ * Handles adding new files to our memory array and triggering a UI update
+ */
+function handleFileSelection() {
+    const newFiles = Array.from(fileInput.files);
+    
+    // Merge new files with existing ones, capping at 10
+    selectedFilesArray = [...selectedFilesArray, ...newFiles].slice(0, 10);
+    
+    // Clear the hidden input so the browser doesn't get "stuck"
+    fileInput.value = ""; 
+    
+    // Update the UI
+    renderFileList();
+}
+
+/**
+ * Removes a file from the memory array when the user clicks 'X'
+ */
+window.removeFile = function(index) {
+    selectedFilesArray.splice(index, 1); // Remove the specific file
+    renderFileList(); // Re-paint the UI
 };
 
-// ─────────────────────────────────────────
-// FILE UPLOAD
-// ─────────────────────────────────────────
-const uploadZone = document.querySelector('.upload-zone');
-const fileInput  = document.createElement('input');
-fileInput.type     = 'file';
-fileInput.accept   = '.pdf';
-fileInput.multiple = true;
-fileInput.style.display = 'none';
-document.body.appendChild(fileInput);
+/**
+ * Paints the list of uploaded files onto the screen
+ */
+function renderFileList() {
+    fileCountLabel.textContent = `Uploaded Files (${selectedFilesArray.length}/10)`;
+    const colors = ['#3ecf8e','#60a5fa','#f472b6','#a78bfa','#fb923c'];
+    
+    const html = selectedFilesArray.map((file, i) => {
+        const color = colors[i % colors.length];
+        const sizeKB = (file.size / 1024).toFixed(0);
+        
+        return `
+        <div class="flex items-center gap-3 p-3 bg-gray-800/40 rounded-lg border-l-4 mb-2" style="border-color: ${color};">
+            <div class="w-2 h-2 rounded-full shrink-0" style="background-color: ${color}; box-shadow: 0 0 8px ${color};"></div>
+            <span class="text-sm text-gray-300 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">${file.name}</span>
+            <span class="text-xs text-gray-500">${sizeKB} KB</span>
+            
+            <button onclick="removeFile(${i})" class="text-gray-500 hover:text-red-400 font-bold ml-2 transition" title="Remove file">✕</button>
+        </div>`;
+    }).join('');
 
-uploadZone.addEventListener('click', () => fileInput.click());
+    fileListContainer.innerHTML = html;
+}
 
-fileInput.addEventListener('change', () => {
-  const files = Array.from(fileInput.files).slice(0, 10);
+/**
+ * Handles sending data to the backend and managing loading states
+ */
+async function processResumes() {
+    // Pull the files directly from our memory array
+    const files = selectedFilesArray; 
+    const jdText = jdTextarea.value.trim();
 
-  // Update count label
-  const countEl = document.getElementById('file-count-label');
-  if (countEl) countEl.textContent = `Uploaded Files (${files.length}/10)`;
+    // 1. Validation
+    if (files.length === 0) return alert('⚠️ Please upload at least 1 CV PDF!');
+    if (files.length > 10) return alert('⚠️ Maximum 10 CVs allowed!');
+    if (!jdText) return alert('⚠️ Please enter a job description!');
 
-  // Build file list
-  const colors = ['#3ecf8e','#60a5fa','#f472b6','#a78bfa','#fb923c',
-                  '#34d399','#818cf8','#f87171','#fbbf24','#38bdf8'];
+    // 2. Set UI to "Loading"
+    analyzeBtnText.textContent = '⏳ Analysing CVs...';
+    analyzeBtn.disabled = true;
 
-  let html = '';
-  files.forEach((file, i) => {
-    const c = colors[i % colors.length];
-    html += `
-      <div class="file-row" style="border-left:2px solid ${c};">
-        <div style="width:8px;height:8px;border-radius:50%;background:${c};box-shadow:0 0 6px ${c};flex-shrink:0;"></div>
-        <span style="font-size:13px;color:#e5e7eb;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${file.name}</span>
-        <span style="font-size:11px;color:rgba(255,255,255,0.3);">${(file.size/1024).toFixed(0)} KB</span>
-      </div>`;
-  });
+    // 3. Prepare data for the backend
+    const formData = new FormData();
+    for (let file of files) formData.append('cvs', file);
+    formData.append('jd', jdText);
 
-  const container = document.getElementById('file-list-container');
-  if (container) container.innerHTML = html;
-});
+    try {
+        // Setup a 2-minute timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); 
 
-// ─────────────────────────────────────────
-// ANALYSE BUTTON
-// ─────────────────────────────────────────
-document.querySelector('.btn-analyse').addEventListener('click', async () => {
+        // Send Request
+        const response = await fetch(BACKEND_URL + "/screen", {
+            method: 'POST',
+            body: formData,
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId); // Clear timeout if request succeeds
 
-  const files   = fileInput.files;
-  const jdText  = document.querySelector('.jd-textarea').value.trim();
-  const btnSpan = document.querySelector('.btn-analyse span');
+        // Handle Backend Errors
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Backend returned an error.');
+        }
 
-  // Validate
-  if (!files || files.length === 0) { alert('⚠️ Please upload at least 1 CV PDF!'); return; }
-  if (files.length > 10)            { alert('⚠️ Maximum 10 CVs allowed!'); return; }
-  if (!jdText)                      { alert('⚠️ Please enter a job description!'); return; }
+        // 4. Success! Render the results
+        const data = await response.json();
+        renderResults(data.results);
 
-  // Loading state
-  btnSpan.textContent = '⏳ Analysing CVs...';
+        // ✅ THE FIX: Clear the memory and UI so old files aren't sent again
+        selectedFilesArray = [];
+        fileListContainer.innerHTML = '';
+        fileCountLabel.textContent = `Uploaded Files (0/10)`;
 
-  // Build FormData
-  const formData = new FormData();
-  for (let file of files) formData.append('cvs', file);
-  formData.append('jd', jdText);
-
-  try {
-
-    // ── First check if backend is alive ──
-    const ping = await fetch(BACKEND + "/").catch(() => null);
-    if (!ping || !ping.ok) {
-      alert('❌ Cannot reach backend!\n\nMake sure you ran:\nuvicorn main:app --reload\n\nin your backend folder.');
-      btnSpan.textContent = '✦ Analyse All CVs with AI →';
-      return;
+    } catch (error) {
+        alert('❌ Connection failed or timed out. Make sure your Python backend is running!');
+        console.error('API Error:', error);
+    } finally {
+        // 5. Reset button state regardless of success or failure
+        analyzeBtnText.textContent = '✦ Analyse All CVs →';
+        analyzeBtn.disabled = false;
     }
+}
 
-    // ── Send CVs to backend ──
-   const controller = new AbortController();
-const timeout = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+/**
+ * Handles painting the AI results onto the screen
+ */
+function renderResults(results) {
+    if (!results || results.length === 0) return alert('No results returned.');
 
-const response = await fetch(BACKEND + "/screen", {
-  method: 'POST',
-  body:   formData,
-  signal: controller.signal
-});
-clearTimeout(timeout);
+    // Hide the "Awaiting Data" empty state
+    emptyState.style.display = 'none';
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      alert('Backend error: ' + (err.detail || 'Something went wrong.'));
-      btnSpan.textContent = '✦ Analyse All CVs with AI →';
-      return;
-    }
+    const rankStyles = {
+        1: { gradient: 'from-yellow-400 to-yellow-600', text: 'text-yellow-400', shadow: 'shadow-yellow-500/50', hex: '#f5c842' },
+        2: { gradient: 'from-gray-300 to-gray-500', text: 'text-gray-300', shadow: 'shadow-gray-400/40', hex: '#c0c0c0' },
+        3: { gradient: 'from-orange-400 to-orange-700', text: 'text-orange-500', shadow: 'shadow-orange-500/40', hex: '#cd7f32' }
+    };
 
-    const data = await response.json();
-    showResults(data.results);
+    // Build HTML for the Candidate Cards
+    const cardsHTML = results.map((cv, i) => {
+        const rankNum = cv.rank || (i + 1);
+        const style = rankStyles[rankNum] || rankStyles[3]; // Default to bronze style for ranks 4+
+        const barWidth = Math.min((cv.score / 10) * 100, 100).toFixed(1);
+        
+        // Build Skill Tags
+        const matchedTags = (cv.matched_skills || []).map(s => `<span class="bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-1 rounded-md text-xs">${s}</span>`).join('');
+        const missingTags = (cv.missing_skills || []).map(s => `<span class="bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-1 rounded-md text-xs">${s}</span>`).join('');
 
-  } catch (error) {
-    alert('❌ Cannot reach backend!\n\nMake sure you ran:\nuvicorn main:app --reload\n\nin your backend folder.');
-    console.error('Fetch error:', error);
-  }
-
-  btnSpan.textContent = '✦ Analyse All CVs with AI →';
-});
-
-// ─────────────────────────────────────────
-// SHOW RESULTS
-// ─────────────────────────────────────────
-function showResults(results) {
-  if (!results || results.length === 0) {
-    alert('No results returned from AI.');
-    return;
-  }
-
-  const rankColors = {
-    1: { badge:'linear-gradient(135deg,#f5c842,#f59e0b)', shadow:'rgba(245,200,66,0.5)',  score:'#f5c842' },
-    2: { badge:'linear-gradient(135deg,#c0c0c0,#a8a8a8)', shadow:'rgba(192,192,192,0.4)', score:'#c0c0c0' },
-    3: { badge:'linear-gradient(135deg,#cd7f32,#a0522d)', shadow:'rgba(205,127,50,0.4)',  score:'#cd7f32' }
-  };
-
-  let cardsHTML = '';
-  results.forEach((cv, i) => {
-    const rankNum  = cv.rank || (i + 1);
-    const color    = rankColors[rankNum] || rankColors[3];
-    const barWidth = Math.min((cv.score / 10) * 100, 100).toFixed(1);
-    const matched  = (cv.matched_skills || []).map(s => `<span class="tag tag-match">${s}</span>`).join('');
-    const missing  = (cv.missing_skills || []).map(s => `<span class="tag tag-miss">${s}</span>`).join('');
-
-    cardsHTML += `
-      <div class="glass-card" style="padding:16px 18px;margin-bottom:10px;animation:fadeUp 0.5s ease-out ${i*0.12}s both;">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
-          <div style="display:flex;align-items:center;gap:12px;">
-            <div style="width:28px;height:28px;border-radius:50%;background:${color.badge};box-shadow:0 0 10px ${color.shadow};display:flex;align-items:center;justify-content:center;font-family:var(--font-heading);font-size:10px;font-weight:700;color:#000;flex-shrink:0;">#${rankNum}</div>
-            <div>
-              <h3 style="font-size:15px;font-weight:700;color:#fff;line-height:1.2;">${cv.name}</h3>
-              <p style="font-family:var(--font-body);font-size:11px;color:rgba(255,255,255,0.45);">${cv.filename}</p>
+        return `
+        <div class="bg-gray-800/60 backdrop-blur-md border border-gray-700 rounded-xl p-5 animate-fade-up" style="animation-delay: ${i * 0.1}s;">
+            
+            <div class="flex justify-between items-start mb-3">
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full bg-gradient-to-br ${style.gradient} ${style.shadow} flex items-center justify-center font-bold text-black text-xs shadow-lg shrink-0">
+                        #${rankNum}
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-white leading-tight">${cv.name}</h3>
+                        <p class="text-xs text-gray-400">${cv.filename}</p>
+                    </div>
+                </div>
+                <div class="text-right shrink-0">
+                    <div class="text-2xl font-bold ${style.text} drop-shadow-md">${parseFloat(cv.score).toFixed(1)}</div>
+                    <div class="text-xs text-gray-500 -mt-1">/10</div>
+                </div>
             </div>
-          </div>
-          <div style="text-align:right;flex-shrink:0;">
-            <div style="font-family:var(--font-heading);font-size:22px;font-weight:700;color:${color.score};text-shadow:0 0 12px ${color.shadow};">${parseFloat(cv.score).toFixed(1)}</div>
-            <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:-2px;">/10</div>
-          </div>
-        </div>
-        <div class="progress-track">
-          <div style="height:100%;width:${barWidth}%;border-radius:999px;background:linear-gradient(90deg,#7c6af7,${color.score});box-shadow:0 0 8px ${color.shadow};transition:width 900ms cubic-bezier(0.4,0,0.2,1);"></div>
-        </div>
-        <p style="font-family:var(--font-body);font-size:12px;color:rgba(255,255,255,0.6);line-height:1.55;margin-bottom:10px;">${cv.reason}</p>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;">${matched}${missing}</div>
-      </div>`;
-  });
+            
+            <div class="w-full h-1.5 bg-gray-700 rounded-full mb-4 overflow-hidden">
+                <div class="h-full rounded-full transition-all duration-1000 ease-out" style="width: ${barWidth}%; background: linear-gradient(90deg, #7c6af7, ${style.hex}); box-shadow: 0 0 8px ${style.hex};"></div>
+            </div>
+            
+            <p class="text-sm text-gray-300 leading-relaxed mb-4">${cv.reason}</p>
+            <div class="flex flex-wrap gap-2">${matchedTags}${missingTags}</div>
 
-  const topScore  = results.length > 0 ? parseFloat(results[0].score).toFixed(1) : '—';
-  const strongCVs = results.filter(r => r.score >= 7).length;
+        </div>`;
+    }).join('');
 
-  const statsHTML = `
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:4px;">
-      <div class="glass-stat" style="padding:12px 14px;text-align:center;">
-        <span style="font-family:var(--font-heading);font-size:18px;font-weight:700;color:#3ecf8e;">${strongCVs}</span>
-        <p style="font-family:var(--font-body);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.4);margin-top:4px;">Strong Matches</p>
-      </div>
-      <div class="glass-stat" style="padding:12px 14px;text-align:center;">
-        <span style="font-family:var(--font-heading);font-size:18px;font-weight:700;color:#f5c842;text-shadow:0 0 10px rgba(245,200,66,0.6);">${topScore}</span>
-        <p style="font-family:var(--font-body);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.4);margin-top:4px;">Top Score</p>
-      </div>
-      <div class="glass-stat" style="padding:12px 14px;text-align:center;">
-        <span style="font-family:var(--font-heading);font-size:18px;font-weight:700;color:#fff;">${results.length}</span>
-        <p style="font-family:var(--font-body);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.4);margin-top:4px;">CVs Ranked</p>
-      </div>
+    // Build HTML for the Bottom Stats
+    const topScore = results.length > 0 ? parseFloat(results[0].score).toFixed(1) : '—';
+    const strongMatches = results.filter(r => r.score >= 7).length;
+
+    const statsHTML = `
+    <div class="grid grid-cols-3 gap-3 mt-4">
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 text-center">
+            <span class="text-xl font-bold text-green-400">${strongMatches}</span>
+            <p class="text-[10px] uppercase tracking-wider text-gray-400 mt-1">Strong Matches</p>
+        </div>
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 text-center">
+            <span class="text-xl font-bold text-yellow-400">${topScore}</span>
+            <p class="text-[10px] uppercase tracking-wider text-gray-400 mt-1">Top Score</p>
+        </div>
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 text-center">
+            <span class="text-xl font-bold text-white">${results.length}</span>
+            <p class="text-[10px] uppercase tracking-wider text-gray-400 mt-1">CVs Ranked</p>
+        </div>
     </div>`;
 
-  // Hide empty state
-  const emptyState = document.getElementById('empty-state');
-  if (emptyState) emptyState.style.display = 'none';
-
-  // Clear old results
-  const container = document.getElementById('results-container');
-  if (container) {
-    container.innerHTML = cardsHTML + statsHTML;
-  } else {
-    // Fallback — inject into right panel
-    const rightPanel = document.querySelector('section:last-of-type');
-    rightPanel.querySelectorAll('.glass-card,.glass-stat,div[style*="grid-template-columns"]').forEach(el => el.remove());
-    rightPanel.insertAdjacentHTML('beforeend', cardsHTML + statsHTML);
-  }
+    // Inject everything into the page
+    resultsContainer.innerHTML = cardsHTML + statsHTML;
 }

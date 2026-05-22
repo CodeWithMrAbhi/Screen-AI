@@ -1,7 +1,7 @@
 // ==========================================
 // 1. CONFIGURATION & DOM ELEMENTS
 // ==========================================
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = "https://screen-ai-backend-3rvv.onrender.com";
 
 // The Memory Bank: Holds files so they aren't overwritten
 let selectedFilesArray = []; 
